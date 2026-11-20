@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# Generated scenes (regenerate with pipeline scripts)
+viewer/scenes/*
+!viewer/scenes/.gitkeep
+# Raw photos can be large; commit selectively with git add -f
+photos/*
+!photos/.gitkeep
+
+# Downloaded MediaPipe models
+gestures/models/
