@@ -1,0 +1,48 @@
+:root {
+  color-scheme: dark;
+  font: 16px/1.5 system-ui, sans-serif;
+  color: #f1efe9;
+  background: #171918;
+  --muted: #b6b9ae;
+  --line: #3c4038;
+  --accent: #deedaa;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { max-width: 68rem; margin: 0 auto; padding: clamp(2rem, 8vw, 6rem) 1.25rem 3rem; }
+header { margin-bottom: 2rem; }
+h1, h2, p { margin: 0; }
+h1 { font-size: clamp(2.25rem, 6vw, 3.75rem); font-weight: 640; line-height: 1.1; letter-spacing: -.055em; }
+h2 { margin-bottom: 1rem; font-size: 1.18rem; font-weight: 620; }
+header p { margin-top: .65rem; color: var(--muted); }
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+section { padding: clamp(1rem, 3vw, 1.65rem); border: 1px solid var(--line); border-radius: 1rem; background: #212420; }
+form { display: grid; gap: .55rem; }
+label { font-weight: 600; font-size: .9rem; }
+label span { font-weight: 400; color: var(--muted); }
+input, button, .open { font: inherit; border-radius: .55rem; }
+input { min-width: 0; width: 100%; border: 1px solid var(--line); padding: .6rem .75rem; background: #181b17; }
+input[type="file"] { padding: .55rem; font-size: .9rem; }
+input::file-selector-button { margin-right: .6rem; padding: .4rem .55rem; border: 0; border-radius: .3rem; background: #373e30; color: inherit; cursor: pointer; }
+input::placeholder, .hint { color: var(--muted); }
+.hint, #feedback { font-size: .88rem; }
+#capture-hint { margin-bottom: .55rem; }
+button, .open { border: 0; font-weight: 650; padding: .55rem .9rem; text-decoration: none; cursor: pointer; }
+button { margin-top: .5rem; justify-self: start; background: var(--accent); color: #242915; }
+button:disabled { opacity: .55; cursor: wait; }
+.open { flex: none; background: #343e29; color: var(--accent); font-size: .85rem; }
+button:hover:enabled, .open:hover { filter: brightness(1.12); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+#feedback:empty, #library-status:empty { display: none; }
+.error { color: #ffb9aa; }
+ul { list-style: none; padding: 0; margin: 0; }
+li { display: flex; align-items: center; gap: .75rem; justify-content: space-between; padding: .8rem 0; border-top: 1px solid var(--line); }
+li:last-child { padding-bottom: 0; }
+li strong { display: block; overflow-wrap: anywhere; }
+li small { display: block; }
+progress { width: min(12rem, 100%); accent-color: var(--accent); }
+
+@media (max-width: 46rem) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+}

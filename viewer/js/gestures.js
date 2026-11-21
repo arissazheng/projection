@@ -1,11 +1,4 @@
-// Gesture navigation: receives hand gestures from `python -m gestures.server` over a
-// WebSocket and turns them into movement through the scene.
-//
-//   palm  (4 fingers up)       LOOK     hand position steers the viewpoint
-//   point (index up)           FORWARD  walk into the room
-//   peace (index + middle up)  BACK     walk back out
-//   three (index+middle+ring)  RESET    glide back to the original photo view
-//   fist / no hand             HOLD     freeze (reposition your hand freely)
+// Apply hand gestures received from the local WebSocket server.
 
 export const GESTURE_HELP = [
   ['palm', '✋', 'Open palm', 'Look around: move your hand to steer'],
@@ -15,51 +8,66 @@ export const GESTURE_HELP = [
   ['fist', '✊', 'Fist', 'Hold: freeze the view'],
 ];
 
+const NO_GESTURE = { hand: false, gesture: 'none', x: 0, y: 0 };
+
 export class GestureClient {
   constructor(url = 'ws://localhost:8765') {
     this.url = url;
     this.ws = null;
-    this.connected = false;
-    this.last = { hand: false, gesture: 'none', x: 0, y: 0 };
-    this.lastAt = 0;
+    this.last = NO_GESTURE;
+    this.lastAt = -Infinity;
     this._wanted = false;
+    this._retry = null;
   }
 
   start() {
+    if (this._wanted) return;
     this._wanted = true;
     this._connect();
   }
 
   stop() {
     this._wanted = false;
-    this.ws?.close();
+    clearTimeout(this._retry);
+    const socket = this.ws;
+    this.ws = null;
+    this.lastAt = -Infinity;
+    socket?.close();
   }
 
   _connect() {
     if (!this._wanted) return;
+    let socket;
     try {
-      this.ws = new WebSocket(this.url);
+      socket = new WebSocket(this.url);
     } catch {
-      setTimeout(() => this._connect(), 1000);
+      this._retry = setTimeout(() => this._connect(), 1000);
       return;
     }
-    this.ws.onopen = () => (this.connected = true);
-    this.ws.onmessage = (e) => {
+    this.ws = socket;
+    socket.onmessage = (event) => {
+      if (socket !== this.ws) return;
       try {
-        this.last = JSON.parse(e.data);
+        this.last = JSON.parse(event.data);
         this.lastAt = performance.now();
       } catch { /* ignore malformed */ }
     };
-    this.ws.onclose = () => {
-      this.connected = false;
-      if (this._wanted) setTimeout(() => this._connect(), 1000);
+    socket.onclose = () => {
+      if (socket !== this.ws) return;
+      this.ws = null;
+      this.lastAt = -Infinity;
+      this._retry = setTimeout(() => this._connect(), 1000);
     };
-    this.ws.onerror = () => this.ws.close();
+    socket.onerror = () => socket.close();
+  }
+
+  get connected() {
+    return this.ws?.readyState === WebSocket.OPEN;
   }
 
   /** Latest gesture; stale (>300 ms) data counts as no hand, so the view holds. */
   get state() {
-    if (!this.connected || performance.now() - this.lastAt > 300) return { hand: false, gesture: 'none', x: 0, y: 0 };
+    if (!this.connected || performance.now() - this.lastAt > 300) return NO_GESTURE;
     return this.last;
   }
 }

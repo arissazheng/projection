@@ -1,13 +1,15 @@
-.venv/
+# Environments and downloaded tools
+/.venv/
+/.walkthrough-venv/
+/.walkthrough-tools/
+/gestures/models/
 __pycache__/
 *.pyc
 .DS_Store
-# Generated scenes (regenerate with pipeline scripts)
-viewer/scenes/*
-!viewer/scenes/.gitkeep
-# Raw photos can be large; commit selectively with git add -f
-photos/*
-!photos/.gitkeep
 
-# Downloaded MediaPipe models
-gestures/models/
+# Local captures and generated scenes
+/*.mov
+/*.mp4
+/photos/
+/.walkthrough-data/
+/viewer/scenes/

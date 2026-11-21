@@ -1,9 +1,11 @@
-# Offline preprocessing (run once per photo)
+# Single-photo scene preparation
 numpy>=1.26
 opencv-python>=4.9
 scipy>=1.11
 Pillow>=10.0
 torch>=2.2
 transformers>=4.45
+
+# Hand tracking and gesture streaming
 mediapipe>=0.10.14
 websockets>=13

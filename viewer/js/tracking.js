@@ -6,8 +6,7 @@
 //   distance           Z = f * IPD / ipd_px              (IPD ≈ 63 mm for adults)
 //   lateral offset     X = (cx - videoWidth / 2) * Z / f   (same for Y)
 // The webcam faces the viewer, so the viewer's right is the image's left: x flips.
-// Turning the head shrinks ipd_px and overestimates Z. That's fine for an MVP. A fix
-// for later is using the face transformation matrix MediaPipe can also output.
+// Turning the head shrinks the measured pupil separation and overestimates distance.
 
 const MP_VERSION = '0.10.14';
 const MP_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/vision_bundle.mjs`;
@@ -44,6 +43,11 @@ export class FaceTracker {
   constructor(videoEl) {
     this.video = videoEl;
     this.landmarker = null;
+    this.startPromise = null;
+    this._resetTracking();
+  }
+
+  _resetTracking() {
     this.lastVideoTime = -1;
     this.lastDetectMs = 0;
     this.filters = [new OneEuro(), new OneEuro(), new OneEuro()];
@@ -51,28 +55,41 @@ export class FaceTracker {
     this.faceVisible = false;
   }
 
-  async start() {
+  start() {
+    this.startPromise ??= this._openCamera().finally(() => { this.startPromise = null; });
+    return this.startPromise;
+  }
+
+  async _openCamera() {
     const vision = await import(MP_URL);
     const fileset = await vision.FilesetResolver.forVisionTasks(MP_WASM);
-    this.landmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
+    const landmarker = await vision.FaceLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: FACE_MODEL, delegate: 'GPU' },
       runningMode: 'VIDEO',
       numFaces: 1,
     });
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 }, facingMode: 'user' },
-      audio: false,
-    });
-    this.video.srcObject = stream;
-    await this.video.play();
+    try {
+      this.video.srcObject = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 }, facingMode: 'user' },
+        audio: false,
+      });
+      await this.video.play();
+      this.landmarker = landmarker;
+    } catch (error) {
+      this.video.srcObject?.getTracks().forEach((track) => track.stop());
+      this.video.srcObject = null;
+      landmarker.close();
+      throw error;
+    }
   }
 
   stop() {
-    const s = this.video.srcObject;
-    if (s) s.getTracks().forEach((t) => t.stop());
+    if (!this.landmarker) return;
+    this.video.srcObject?.getTracks().forEach((track) => track.stop());
     this.video.srcObject = null;
-    this.landmarker?.close();
+    this.landmarker.close();
     this.landmarker = null;
+    this._resetTracking();
   }
 
   /**

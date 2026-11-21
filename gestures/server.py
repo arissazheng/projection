@@ -1,22 +1,4 @@
-"""Webcam hand-gesture tracker → WebSocket stream for the viewer.
-
-    python -m gestures.server            # laptop front camera, preview window
-    python -m gestures.server --demo     # no camera: cycles gestures, for testing the viewer
-
-Then set the viewer to "Gestures" mode (press M until the HUD says gesture).
-
-Pipeline per frame: OpenCV grabs the frame → MediaPipe HandLandmarker (21 landmarks)
-→ gestures.classify (rule-based, debounced) → JSON over ws://localhost:8765:
-
-    {"hand": true, "gesture": "palm", "raw": "palm", "x": 0.31, "y": -0.12,
-     "fingers": [1,1,1,1], "fps": 29.8, "ms": 9.1}
-
-x, y are the palm position in [-1, 1], mirrored so moving your hand to your right
-gives +x. The viewer turns gestures into motion. This process only does perception.
-
-macOS: the first run asks for camera permission for your terminal app. If the window
-stays black, allow it in System Settings → Privacy & Security → Camera.
-"""
+"""Track hand gestures and stream them to the single-photo viewer over WebSocket."""
 from __future__ import annotations
 
 import argparse
@@ -25,10 +7,12 @@ import json
 import threading
 import time
 import urllib.request
+from concurrent.futures import Future
 from pathlib import Path
 
 import cv2
 import numpy as np
+from websockets.asyncio.server import broadcast, serve
 
 from .classify import DESCRIPTIONS, PALM_CENTER, Debouncer, classify, fingers_extended
 
@@ -42,24 +26,30 @@ HAND_CONNECTIONS = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 
 
 
 class Broadcaster:
-    """WebSocket server on a background thread (cv2.imshow must own the main thread on macOS)."""
+    """Run WebSocket I/O on a background thread so OpenCV can own the main thread."""
 
     def __init__(self, host: str, port: int):
         self.host, self.port = host, port
         self.clients: set = set()
         self.loop = asyncio.new_event_loop()
-        self.ready = threading.Event()
+        self.ready: Future[None] = Future()
         threading.Thread(target=self._run, daemon=True).start()
-        self.ready.wait(5)
+        self.ready.result(timeout=5)
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
-        self.loop.run_until_complete(self._serve())
+        try:
+            self.loop.run_until_complete(self._serve())
+        except Exception as error:
+            if self.ready.done():
+                raise
+            self.ready.set_exception(error)
+        finally:
+            self.loop.close()
 
     async def _serve(self):
-        from websockets.asyncio.server import serve
         async with serve(self._handler, self.host, self.port):
-            self.ready.set()
+            self.ready.set_result(None)
             await asyncio.Future()
 
     async def _handler(self, ws):
@@ -71,9 +61,8 @@ class Broadcaster:
             self.clients.discard(ws)
 
     def send(self, msg: dict):
-        from websockets.asyncio.server import broadcast
         data = json.dumps(msg)
-        self.loop.call_soon_threadsafe(lambda: broadcast(set(self.clients), data))
+        self.loop.call_soon_threadsafe(lambda: broadcast(self.clients.copy(), data))
 
 
 def load_landmarker():
@@ -196,8 +185,8 @@ def run_demo(out: Broadcaster):
                 time.sleep(1 / 30)
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--camera", type=int, default=0, help="OpenCV camera index (0 = built-in)")
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=8765)
@@ -205,8 +194,13 @@ def main():
     ap.add_argument("--no-window", action="store_true", help="don't show the preview window")
     ap.add_argument("--demo", action="store_true", help="no camera; cycle through gestures")
     args = ap.parse_args()
+    if args.debounce < 1:
+        ap.error("--debounce must be positive")
 
-    out = Broadcaster(args.host, args.port)
+    try:
+        out = Broadcaster(args.host, args.port)
+    except (OSError, TimeoutError) as error:
+        ap.error(f"Could not start the gesture server on {args.host}:{args.port}. {error}")
     try:
         run_demo(out) if args.demo else run_camera(args, out)
     except KeyboardInterrupt:

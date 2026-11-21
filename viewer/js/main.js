@@ -64,11 +64,16 @@ let layers = null; // { fg: LayerMesh, bg: LayerMesh, meta }
 const msg = document.getElementById('msg');
 const hud = document.getElementById('hud');
 const panel = document.getElementById('panel');
+const sceneSelect = document.getElementById('scene');
+const modeButtons = document.querySelectorAll('[data-mode]');
+const layerButtons = document.querySelectorAll('[data-layers]');
+const webcamPreview = document.getElementById('webcam-preview');
 const corner = new CornerPin(stage, document.getElementById('calib-grid'));
-const tracker = new FaceTracker(document.getElementById('webcam-preview'));
-const gestures = new GestureClient(new URLSearchParams(location.search).get('ws') ?? 'ws://localhost:8765');
+const tracker = new FaceTracker(webcamPreview);
+const gestures = new GestureClient(new URLSearchParams(location.search).get('ws') ?? undefined);
 
 let mode = 'mouse';
+let requestedMode = mode;
 let layerView = 'both';
 const mouse = { x: 0, y: 0, zScale: 1 };
 const nav = { lookX: 0, lookY: 0, dolly: 0 }; // gesture navigation; dolly moves the room toward you (m)
@@ -87,8 +92,8 @@ window.addEventListener('resize', resize);
 // ---------- scene loading ----------
 async function listScenes() {
   try {
-    const r = await fetch('scenes/index.json', { cache: 'no-store' });
-    return (await r.json()).scenes ?? [];
+    const response = await fetch('scenes/index.json', { cache: 'no-store' });
+    return response.ok ? (await response.json()).scenes ?? [] : [];
   } catch {
     return [];
   }
@@ -99,7 +104,8 @@ async function loadScene(name) {
   const data = await loadSceneData(name);
   if (layers) {
     world.remove(layers.fg.mesh, layers.bg.mesh);
-    layers.fg.dispose(); layers.bg.dispose();
+    layers.fg.dispose();
+    layers.bg.dispose();
   }
   const { meta } = data;
   layers = {
@@ -122,6 +128,19 @@ async function loadScene(name) {
   history.replaceState(null, '', url);
 }
 
+async function selectScene(name) {
+  sceneSelect.disabled = true;
+  try {
+    await loadScene(name);
+  } catch (error) {
+    console.error(error);
+    msg.textContent = `Could not load ${name}. ${error.message}`;
+    sceneSelect.value = sceneName ?? name;
+  } finally {
+    sceneSelect.disabled = false;
+  }
+}
+
 function updateGeometry() {
   if (!layers) return;
   const { W, H } = screenSize();
@@ -141,15 +160,16 @@ function setLayerView(v) {
     layers.fg.mesh.visible = v !== 'bg';
     layers.bg.mesh.visible = v !== 'fg';
   }
-  document.querySelectorAll('[data-layers]').forEach((b) => b.classList.toggle('on', b.dataset.layers === v));
+  for (const button of layerButtons) button.classList.toggle('on', button.dataset.layers === v);
 }
 
 // ---------- UI ----------
 function buildSliders() {
   const root = document.getElementById('sliders');
-  root.innerHTML = '';
+  root.replaceChildren();
   const groups = [['Scene depth', 'scene', sceneParams], ['Display', 'rig', rig], ['Webcam tracking', 'webcam', rig]];
   for (const [title, key, target] of groups) {
+    if (key === 'scene' && !layers) continue;
     const h = document.createElement('h2');
     h.textContent = title;
     root.appendChild(h);
@@ -175,36 +195,44 @@ function buildSliders() {
   }
 }
 
-async function setMode(m) {
-  if (m === 'webcam' && !tracker.landmarker) {
-    msg.textContent = 'Starting webcam + face model…';
+async function setMode(next) {
+  requestedMode = next;
+  if (next === 'webcam' && !tracker.landmarker) {
+    msg.textContent = 'Starting head tracking…';
     try {
       await tracker.start();
-      msg.textContent = '';
-    } catch (err) {
-      console.error(err);
-      msg.textContent = `Webcam failed: ${err.message}. Staying in mouse mode.`;
-      setTimeout(() => (msg.textContent = ''), 4000);
-      m = 'mouse';
+    } catch (error) {
+      if (requestedMode !== 'webcam') return;
+      console.error(error);
+      msg.textContent = `Could not start head tracking. ${error.message}`;
+      next = requestedMode = 'mouse';
+    }
+    if (requestedMode !== next) {
+      tracker.stop();
+      return;
     }
   }
-  if (m === 'gesture') gestures.start(); else gestures.stop();
-  mode = m;
-  document.getElementById('mode-mouse').classList.toggle('on', m === 'mouse');
-  document.getElementById('mode-webcam').classList.toggle('on', m === 'webcam');
-  document.getElementById('mode-gesture').classList.toggle('on', m === 'gesture');
-  document.getElementById('webcam-preview').style.display = m === 'webcam' ? 'block' : 'none';
-  document.getElementById('gesture-help').style.display = m === 'gesture' ? 'block' : 'none';
+  if (msg.textContent === 'Starting head tracking…') msg.textContent = '';
+  if (next !== 'webcam') tracker.stop();
+  if (next === 'gesture') gestures.start();
+  else gestures.stop();
+
+  mode = next;
+  for (const button of modeButtons) button.classList.toggle('on', button.dataset.mode === mode);
+  webcamPreview.hidden = mode !== 'webcam';
+  gestureHelp.hidden = mode !== 'gesture';
 }
 
 const gestureHelp = document.getElementById('gesture-help');
 gestureHelp.innerHTML = '<div class="status"></div>' + GESTURE_HELP.map(([id, icon, name, what]) =>
   `<div class="g" data-g="${id}"><span>${icon}</span><b>${name}</b><small>${what}</small></div>`).join('');
+const gestureStatus = gestureHelp.querySelector('.status');
 let shownGesture = null;
 function updateGestureHelp(g) {
-  gestureHelp.querySelector('.status').textContent = gestures.connected
-    ? (g.hand ? `Seeing: ${g.gesture}` : 'Connected · no hand in view')
-    : 'Not connected. Run: python -m gestures.server';
+  const status = gestures.connected
+    ? (g.hand ? `Detected ${g.gesture}` : 'Connected. Hold up a hand.')
+    : 'Start the gesture server with python -m gestures.server.';
+  if (gestureStatus.textContent !== status) gestureStatus.textContent = status;
   if (g.gesture !== shownGesture) {
     shownGesture = g.gesture;
     gestureHelp.querySelectorAll('.g').forEach((el) => el.classList.toggle('on', el.dataset.g === g.gesture));
@@ -216,12 +244,10 @@ function toggleCalibration() {
   document.getElementById('calib').classList.toggle('on', corner.active);
 }
 
-document.getElementById('mode-mouse').onclick = () => setMode('mouse');
-document.getElementById('mode-webcam').onclick = () => setMode('webcam');
-document.getElementById('mode-gesture').onclick = () => setMode('gesture');
+for (const button of modeButtons) button.onclick = () => setMode(button.dataset.mode);
 document.getElementById('calib').onclick = toggleCalibration;
-document.querySelectorAll('[data-layers]').forEach((b) => (b.onclick = () => setLayerView(b.dataset.layers)));
-document.getElementById('scene').onchange = (e) => loadScene(e.target.value);
+for (const button of layerButtons) button.onclick = () => setLayerView(button.dataset.layers);
+sceneSelect.onchange = () => selectScene(sceneSelect.value);
 
 window.addEventListener('pointermove', (e) => {
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
@@ -236,7 +262,7 @@ window.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   const k = e.key.toLowerCase();
   if (k === 'h') { panel.classList.toggle('hidden'); hud.classList.toggle('hidden'); }
-  else if (k === 'm') setMode({ mouse: 'webcam', webcam: 'gesture', gesture: 'mouse' }[mode]);
+  else if (k === 'm') setMode({ mouse: 'webcam', webcam: 'gesture', gesture: 'mouse' }[requestedMode]);
   else if (k === 'c') toggleCalibration();
   else if (k === 'f') document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
   else if (k === '0') { mouse.x = 0; mouse.y = 0; mouse.zScale = 1; Object.assign(nav, { lookX: 0, lookY: 0, dolly: 0 }); }
@@ -248,7 +274,7 @@ window.addEventListener('keydown', (e) => {
     const s = e.shiftKey ? 10 : 1;
     corner.nudge({ ArrowLeft: -s, ArrowRight: s }[e.key] ?? 0, { ArrowUp: -s, ArrowDown: s }[e.key] ?? 0);
     e.preventDefault();
-  } else if (corner.active && ['tab'].includes(k)) {
+  } else if (corner.active && k === 'tab') {
     corner.selected = (corner.selected + 1) % 4; corner.apply(); e.preventDefault();
   }
 });
@@ -256,8 +282,7 @@ window.addEventListener('keydown', (e) => {
 // ---------- render loop ----------
 let frames = 0, fps = 0, fpsT = performance.now(), lastFrame = performance.now();
 
-function currentEye(dt) {
-  const { W, H } = screenSize();
+function currentEye(dt, W, H) {
   if (mode === 'gesture') {
     const g = gestures.state;
     // Walk at most halfway to the far wall. Never back up past where the photo was taken:
@@ -282,9 +307,9 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min((now - lastFrame) / 1000, 0.1);
   lastFrame = now;
-  const eye = currentEye(dt);
-  world.position.z = nav.dolly; // walking = moving the room toward the viewer
   const { W, H } = screenSize();
+  const eye = currentEye(dt, W, H);
+  world.position.z = nav.dolly; // Walking moves the room toward the viewer.
   setOffAxisCamera(camera, eye, W, H);
   renderer.render(world, camera);
 
@@ -305,15 +330,15 @@ function frame(now) {
   setMode('mouse');
   setLayerView('both');
   const scenes = await listScenes();
-  const sel = document.getElementById('scene');
-  sel.innerHTML = scenes.map((s) => `<option>${s}</option>`).join('');
+  sceneSelect.replaceChildren(...scenes.map((name) => new Option(name, name)));
   if (!scenes.length) {
-    msg.innerHTML = 'No scenes yet.<br>Run <code>python -m pipeline.prepare_scene photos/hotel_room.jpg --name hotel_room</code>, then reload.';
+    sceneSelect.disabled = true;
+    msg.textContent = 'Prepare a scene with python -m pipeline.prepare_scene path/to/room.jpg, then reload.';
   } else {
     const want = new URLSearchParams(location.search).get('scene');
     const name = scenes.includes(want) ? want : scenes[0];
-    sel.value = name;
-    await loadScene(name).catch((err) => { console.error(err); msg.textContent = `Failed to load ${name}: ${err.message}`; });
+    sceneSelect.value = name;
+    await selectScene(name);
   }
   requestAnimationFrame(frame);
 })();

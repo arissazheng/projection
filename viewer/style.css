@@ -1,0 +1,34 @@
+:root { --panel: rgba(18, 18, 22, 0.86); --text: #e8e8ea; --muted: #9a9aa2; --accent: #ffcc4d; }
+html, body { margin: 0; height: 100%; background: #000; color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow: hidden; }
+#stage { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; transform-origin: 0 0; }
+#stage canvas { display: block; width: 100%; height: 100%; }
+#calib-grid { position: absolute; inset: 0; pointer-events: none; display: none; }
+.handle { position: fixed; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%;
+  border: 2px solid var(--accent); background: rgba(255, 204, 77, 0.25); cursor: grab; z-index: 20; display: none; }
+.handle.selected { background: var(--accent); }
+#panel { position: fixed; top: 12px; left: 12px; width: 290px; max-height: calc(100vh - 24px); overflow: auto;
+  background: var(--panel); border-radius: 10px; padding: 12px 14px; z-index: 10; backdrop-filter: blur(6px); }
+#panel.hidden, #hud.hidden { display: none; }
+#panel h1 { font-size: 14px; margin: 0 0 8px; }
+#panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 0 6px; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin: 6px 0; }
+.row select, .row input[type=range] { grid-column: 1 / -1; width: 100%; }
+.row .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+select, button { font: inherit; background: #2a2a31; color: var(--text); border: 1px solid #3a3a44; border-radius: 6px; padding: 4px 8px; }
+button.on { border-color: var(--accent); color: var(--accent); }
+.btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.keys { color: var(--muted); font-size: 12px; margin-top: 10px; }
+kbd { background: #2a2a31; border-radius: 4px; padding: 0 4px; }
+#hud { position: fixed; right: 12px; bottom: 12px; background: var(--panel); border-radius: 8px; padding: 6px 10px;
+  font: 12px ui-monospace, Menlo, monospace; z-index: 10; white-space: pre; }
+#msg { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; color: var(--muted); pointer-events: none; }
+#gesture-help { margin-top: 10px; }
+#gesture-help .g { display: grid; grid-template-columns: 26px 1fr; gap: 0 6px; padding: 4px 6px; border-radius: 6px; }
+#gesture-help .g.on { background: rgba(255, 204, 77, 0.16); outline: 1px solid var(--accent); }
+#gesture-help .g b { font-weight: 600; }
+#gesture-help .g span:first-child { font-size: 18px; grid-row: span 2; }
+#gesture-help .g small { color: var(--muted); }
+#gesture-help .status { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+#webcam-preview { position: fixed; right: 12px; bottom: 64px; width: 160px; transform: scaleX(-1); border-radius: 6px; z-index: 10; }
+.layers { margin-top: 6px; }

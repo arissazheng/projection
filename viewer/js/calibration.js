@@ -1,15 +1,7 @@
-// Projector keystone correction with a 4-corner pin.
-//
-// A projector aimed at a wall at an angle draws a trapezoid. We pre-warp the rendered
-// frame with the homography that maps the window rectangle onto the four corners
-// the user drags to the *physical* rectangle on the wall, so the projection lands
-// rectangular. The homography is applied with CSS matrix3d (GPU-composited, ~free).
-//
-// Course tie-in: same 8-unknown linear system as in the mosaicing project (4 point
-// correspondences → exact solve).
+// Map the viewport rectangle to four measured corners with a homography.
 
 const STORAGE_KEY = 'roomwindow.corners.v1';
-const DEFAULT = [[0, 0], [1, 0], [1, 1], [0, 1]]; // normalized TL, TR, BR, BL
+const DEFAULT_CORNERS = [[0, 0], [1, 0], [1, 1], [0, 1]]; // Top left, clockwise, normalized.
 
 /** Solve for H (3x3, h22 = 1) with H · src_i ∝ dst_i for 4 point pairs. */
 export function solveHomography(src, dst) {
@@ -70,7 +62,7 @@ export class CornerPin {
       const c = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (Array.isArray(c) && c.length === 4) return c;
     } catch { /* storage unavailable */ }
-    return DEFAULT.map((p) => [...p]);
+    return DEFAULT_CORNERS.map((point) => [...point]);
   }
 
   _save() {
@@ -85,7 +77,7 @@ export class CornerPin {
   }
 
   reset() {
-    this.corners = DEFAULT.map((p) => [...p]);
+    this.corners = DEFAULT_CORNERS.map((point) => [...point]);
     this._save();
     this.apply();
   }

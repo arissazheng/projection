@@ -1,9 +1,4 @@
-"""Photo -> scene folder for the viewer.
-
-    python -m pipeline.prepare_scene photos/our_room.jpg --name our_room
-
-Then reload the viewer and pick the scene from the dropdown.
-"""
+"""Prepare a photo scene for the Room Window viewer."""
 from __future__ import annotations
 
 import argparse
@@ -15,11 +10,11 @@ import numpy as np
 
 from .depth import estimate_disparity
 from .layers import build_layers
-from .scene_io import _resize, disparity_vis, write_scene
+from .scene_io import disparity_vis, resize_to_fit, write_scene
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("photo", type=Path)
     ap.add_argument("--name", help="scene name (default: photo filename)")
     ap.add_argument("--model", default="small", help="small | base | large | HF model id")
@@ -35,7 +30,7 @@ def main() -> None:
     if bgr is None:
         raise SystemExit(f"could not read {args.photo}")
     rgb_full = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-    rgb = _resize(rgb_full, args.work_size)
+    rgb = resize_to_fit(rgb_full, args.work_size)
 
     t = time.perf_counter()
     disp = estimate_disparity(rgb, args.model)
@@ -45,7 +40,7 @@ def main() -> None:
     layers = build_layers(rgb, disp, edge_threshold=args.edge_threshold)
     print(f"layers: {time.perf_counter() - t:.1f}s  hole pixels {layers.hole.mean() * 100:.1f}%")
 
-    hole_vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).copy()
+    hole_vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
     hole_vis[layers.hole] = (0.4 * hole_vis[layers.hole] + [0, 0, 150]).astype(np.uint8)
     hole_vis[layers.edges] = (0, 255, 255)
 

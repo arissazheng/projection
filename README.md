@@ -1,89 +1,79 @@
 # Room Window
 
-CS 180 final project: turn a single photo of a room into a head-tracked wall projection you can "look into." See **[PLAN.md](PLAN.md)** for the build plan, milestones and ownership.
+Room Window is a CS 180 project for exploring a captured room in a browser. The multi-view walkthrough builds a 3D scene from a video or photo set. The single-photo viewer uses estimated depth to create parallax for a display or projection.
 
-```
-photo ──► Depth Anything V2 ──► foreground + inpainted background layers ──► browser viewer
-                                                                              ├─ off-axis projection from eye position
-                                                                              ├─ eye = mouse  or  webcam (MediaPipe)
-                                                                              └─ 4-corner pin for the projector
-```
+## Multi-view walkthrough
 
-## Setup
+On Apple Silicon macOS, install `uv` and Node.js with `npm`. Run setup and start the server from the repository root.
 
 ```bash
-uv venv --python 3.12 .venv          # or: python3 -m venv .venv
+bash scripts/setup_walkthrough.sh
+.walkthrough-venv/bin/python -m pipeline.walkthrough
+```
+
+Open [Room Walkthrough](http://127.0.0.1:8181/). Select one video or 12–500 overlapping photos of the same room, then click **Build walkthrough**. Leave the server running while it aligns the views and trains the scene. When the scene is ready, click **Open walkthrough**.
+
+| Control | Action |
+| --- | --- |
+| `2` | Enter Fly mode |
+| `W` `A` `S` `D` | Move the camera |
+| Drag or press `G` | Look around with the mouse |
+| `Q` `E` | Change height with mouse look enabled |
+| `R` / `Esc` | Reset the camera / release the mouse |
+
+Move slowly through the room while recording. Keep nearby views overlapping and film toward the angles you want to explore. Sparsely captured angles can smear, and Fly mode allows the camera to pass through surfaces.
+
+Processing runs locally. The app saves finished scenes in `.walkthrough-data/` so they reopen without training. Use `--steps 10000` when starting the server to train new imports longer.
+
+## Single-photo projection
+
+Run setup and prepare a scene from the repository root. Substitute your own image path.
+
+```bash
+uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r requirements.txt
-```
-
-The first depth run downloads the model (~100 MB for `small`).
-
-## Make a scene
-
-From a photo (our first test image is `photos/hotel_room.jpg`):
-
-```bash
-.venv/bin/python -m pipeline.prepare_scene photos/hotel_room.jpg --name hotel_room --model base --near 1 --far 15
-```
-
-Options: `--model small|base|large`, `--near`/`--far` (meters from the eye to the nearest/farthest point), `--edge-threshold`. Each scene folder also gets `debug_disparity.png` and `debug_holes.png` (yellow = depth edges, red = regions the background layer fills in), so check those first when something looks wrong.
-
-## Run the viewer
-
-```bash
+.venv/bin/python -m pipeline.prepare_scene path/to/room.jpg --name room
 python3 -m http.server 8180 -d viewer
 ```
 
-Open http://localhost:8180. The webcam needs `localhost` or https.
+Open [Room Window](http://localhost:8180/) and select the scene. The first preparation run downloads the depth model. Use `--model small|base|large`, `--near`, `--far`, and `--edge-threshold` to tune the result. The generated folder in `viewer/scenes/` contains disparity and layer diagnostics.
 
-## Navigate with hand gestures (laptop camera)
+| Control | Action |
+| --- | --- |
+| Mouse / scroll | Move the virtual eye / adjust distance |
+| `M` | Cycle through Mouse, Head, and Gestures |
+| `0` | Reset the mouse and gesture viewpoint |
+| `1` `2` `3` | Show both layers, foreground only, or background only |
+| `C` | Start or finish projector calibration |
+| `H` / `F` | Toggle the controls / toggle fullscreen |
 
-In a second terminal:
+### Head tracking and gestures
 
-```bash
-.venv/bin/python -m gestures.server
-```
+Use **Head** to track the viewer through the browser camera. For hand gestures, run `.venv/bin/python -m gestures.server` in a second terminal and choose **Gestures**. Hold your palm about 40–80 cm from the camera and face it toward the lens. Add `--demo` to cycle through gestures without a camera.
 
-This opens a mirrored camera preview showing the detected gesture, and streams it to the viewer at `ws://localhost:8765`. In the viewer, click **Gestures** (or press `M` until the HUD says `gesture`). On macOS, the first run asks for camera permission for your terminal app.
+| Gesture | Action |
+| --- | --- |
+| Open palm | Move your hand to steer the view |
+| Index finger | Move forward |
+| Index and middle fingers | Move back |
+| Index, middle, and ring fingers | Reset the view |
+| Fist or no hand | Hold the view |
 
-Hold your hand up, palm facing the camera, about 40–80 cm away:
+### Projector calibration
 
-| Gesture | Fingers up | What it does |
-|---|---|---|
-| ✋ **Open palm** | index, middle, ring, pinky | **Look around:** move your hand left/right/up/down to steer the viewpoint |
-| ☝️ **Point** | index only | **Walk forward** into the room (Walk speed slider) |
-| ✌️ **Peace** | index + middle | **Walk back** (stops at the spot the photo was taken from) |
-| 🤟 **Three** | index + middle + ring | **Reset** to the original photo view |
-| ✊ **Fist** | none | **Hold:** freeze the view so you can move your hand without moving the view |
-| no hand / anything else | | Hold |
+1. Measure the displayed image and set **Screen width** in meters. Set **Reference eye distance** to the usual viewing distance. To match the photo's horizontal field of view, use `screenWidth / (2 * tan(photoHFOV / 2))`.
+2. In **Head** mode, set **Webcam FOV**, **Webcam above screen top**, and **Webcam z offset**. Check the eye position in the HUD from a measured spot.
+3. Tune **Near distance** and **Far distance** to match the room's proportions. The depth estimate has relative scale, so a measured wall distance helps.
+4. Press `C` and drag the corners onto the physical display rectangle. Use `Tab` to change corners, arrow keys to nudge, and `R` to reset the corners.
 
-How it works ([gestures/classify.py](gestures/classify.py)): MediaPipe finds 21 hand landmarks. A finger counts as "up" when its tip is ≥1.15× farther from the wrist than its middle joint. The thumb is ignored because it's unreliable when the hand rotates. A gesture only switches after it wins a majority of the last 5 frames, so brief misreads while you change poses don't trigger a walk or reset.
+## Repository layout
 
-No camera handy? `python -m gestures.server --demo` cycles through every gesture so you can test the viewer side.
+| Path | Contents |
+| --- | --- |
+| `pipeline/` | Capture reconstruction, scene preparation, and the local walkthrough server |
+| `viewer/walkthrough/` | Walkthrough importer and scene library |
+| `viewer/index.html`, `viewer/style.css`, `viewer/js/` | Single-photo viewer, tracking, and calibration |
+| `gestures/` | Hand classification, camera preview, and WebSocket server |
+| `scripts/setup_walkthrough.sh` | Walkthrough dependency setup |
 
-## Viewer controls
-
-| Key | |
-|---|---|
-| mouse / scroll | move the virtual eye / change its distance |
-| `M` | cycle mouse → head tracking (webcam, in-browser) → gestures |
-| `0` | snap the eye to the reference position (shows the original photo exactly) |
-| `1` `2` `3` | both layers / foreground only / background only |
-| `C` | calibrate the projector: drag the corners onto the wall rectangle, arrows nudge, `Tab` next corner, `R` reset |
-| `H` | hide UI · `F` fullscreen |
-
-### Getting physically correct parallax
-1. Set **Screen width** to the real width of the display or projected image, in meters.
-2. Set **Reference eye distance** to where the viewer usually stands. For the least distortion it should also match the photo's field of view: `refEyeZ ≈ screenWidth / (2·tan(photoHFOV/2))`.
-3. Webcam: set **Webcam FOV** (most laptop cams are 60–78°) and **Webcam above screen top** to where the camera really sits. Then stand still at a measured spot and check that the HUD's eye position matches.
-4. Tune **Near/Far distance** until the room's proportions look right. Relative depth has no scale, so a tape-measured distance to the back wall helps.
-
-## Layout
-
-```
-pipeline/   offline Python: depth.py, layers.py, scene_io.py, prepare_scene.py
-gestures/   OpenCV + MediaPipe hand tracker: classify.py (gesture rules), server.py (camera → WebSocket)
-viewer/     static web app: js/projection.js (off-axis math), js/scene.js (meshes),
-            js/tracking.js (MediaPipe + One-Euro), js/calibration.js (homography corner pin)
-photos/     input photos (gitignored; `git add -f` the ones you want to keep)
-```
+See the [project plan](PLAN.md) for architecture and evaluation.

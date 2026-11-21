@@ -1,21 +1,4 @@
-"""Split one RGB-D image into a foreground layer and an inpainted background layer.
-
-When the viewer moves, foreground objects slide relative to what is behind them and
-uncover regions the photo never saw. We prepare for that offline:
-
-1. Find depth discontinuities (edges where disparity jumps).
-2. On the *near* side of each edge, within `radius` pixels, build a background
-   layer by extending the farther surface inward: each pixel takes the depth and
-   color of the farthest pixel in its neighborhood ("background extension").
-3. Smooth the filled colors so the extension doesn't look streaky.
-
-The viewer then renders the background mesh behind the foreground mesh, and drops
-foreground triangles that straddle an edge, so the gap shows the background layer
-instead of a rubber-sheet stretch.
-
-This is the cheap, classical baseline. Upgrade path: replace `fill_color` with LaMa or
-Stable Diffusion inpainting on the `hole` mask (and compare them in the writeup).
-"""
+"""Extend background surfaces behind depth edges in a single photo."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -39,22 +22,24 @@ def depth_edges(disp: np.ndarray, threshold: float, window: int = 5) -> np.ndarr
     return local_range > threshold
 
 
-def background_extension(rgb: np.ndarray, disp: np.ndarray, radius: int, stride: int = 2):
-    """For every pixel, the color and disparity of the farthest pixel within `radius`."""
+def background_extension(rgb: np.ndarray, disp: np.ndarray, radius: int,
+                         stride: int = 2) -> tuple[np.ndarray, np.ndarray]:
+    """Find the color and disparity of the farthest sampled neighbor of each pixel."""
     best_disp = disp.copy()
     best_rgb = rgb.copy()
-    pad = radius
-    disp_p = np.pad(disp, pad, mode="edge")
-    rgb_p = np.pad(rgb, ((pad, pad), (pad, pad), (0, 0)), mode="edge")
+    padded_disp = np.pad(disp, radius, mode="edge")
+    padded_rgb = np.pad(rgb, ((radius, radius), (radius, radius), (0, 0)), mode="edge")
     h, w = disp.shape
     for dy in range(-radius, radius + 1, stride):
         for dx in range(-radius, radius + 1, stride):
             if dx * dx + dy * dy > radius * radius:
                 continue
-            d = disp_p[pad + dy: pad + dy + h, pad + dx: pad + dx + w]
-            farther = d < best_disp
-            best_disp = np.where(farther, d, best_disp)
-            best_rgb[farther] = rgb_p[pad + dy: pad + dy + h, pad + dx: pad + dx + w][farther]
+            rows = slice(radius + dy, radius + dy + h)
+            cols = slice(radius + dx, radius + dx + w)
+            candidate = padded_disp[rows, cols]
+            farther = candidate < best_disp
+            best_disp[farther] = candidate[farther]
+            best_rgb[farther] = padded_rgb[rows, cols][farther]
     return best_rgb, best_disp
 
 
@@ -67,9 +52,7 @@ def build_layers(rgb: np.ndarray, disp: np.ndarray, edge_threshold: float = 0.04
     near_edges = ndimage.binary_dilation(edges, iterations=radius)
 
     ext_rgb, ext_disp = background_extension(rgb, disp, radius)
-    # Only the *near* side of an edge can hide anything. Receding walls/floors next to
-    # an object also beat the threshold against the farthest neighbor, so require the
-    # pixel to sit above the midpoint between the local near and far surfaces.
+    # Fill the near side of each edge, where shifting the viewer can uncover the background.
     win = 2 * radius + 1
     mid = 0.5 * (ndimage.maximum_filter(disp, win) + ndimage.minimum_filter(disp, win))
     hole = near_edges & (disp > mid) & (disp - ext_disp > edge_threshold)

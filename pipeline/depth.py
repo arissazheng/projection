@@ -1,9 +1,4 @@
-"""Monocular depth with Depth Anything V2 (Hugging Face transformers port).
-
-Output convention used everywhere in this repo: a float32 *normalized disparity*
-map in [0, 1], where 1 = nearest and 0 = farthest. The viewer turns it into metric
-distance with the scene's nearDist / farDist (see PLAN.md, "Coordinate conventions").
-"""
+"""Estimate relative disparity with Depth Anything V2. Values near 1 are closer."""
 from __future__ import annotations
 
 import cv2
@@ -48,7 +43,7 @@ def estimate_disparity(rgb: np.ndarray, model: str = "small") -> np.ndarray:
 
 
 def normalize_disparity(disp: np.ndarray, lo_pct: float = 1.0, hi_pct: float = 99.0) -> np.ndarray:
-    """Robustly rescale to [0, 1] (percentile clip so a few outliers don't squash the range)."""
+    """Rescale to [0, 1] with percentile clipping to limit the effect of outliers."""
     lo, hi = np.percentile(disp, [lo_pct, hi_pct])
     out = (disp - lo) / max(hi - lo, 1e-6)
     return np.clip(out, 0.0, 1.0).astype(np.float32)

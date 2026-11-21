@@ -7,8 +7,7 @@
 //   1/D = 1/far + d * (1/near - 1/far) d = normalized disparity (1 = near)
 //   P   = (xs * D/E, ys * D/E, E - D)
 //
-// So from the reference eye the mesh reproduces the photo exactly. From anywhere
-// else you get parallax.
+// The reference eye sees the source photo crop. Moving the eye produces parallax.
 
 import * as THREE from 'three';
 
@@ -128,6 +127,7 @@ export class LayerMesh {
 
   dispose() {
     this.geometry.dispose();
+    this.mesh.material.map.dispose();
     this.mesh.material.dispose();
   }
 }

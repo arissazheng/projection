@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Room Walkthrough</title>
+  <link rel="stylesheet" href="/viewer/walkthrough/style.css">
+  <script type="module" src="/viewer/walkthrough/import.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Room Walkthrough</h1>
+      <p>Import a room capture and explore it with a virtual camera.</p>
+    </header>
+    <div class="layout">
+      <section aria-labelledby="import-heading">
+        <h2 id="import-heading">Import a capture</h2>
+        <form id="import-form">
+          <label for="files">Video or photos</label>
+          <input id="files" type="file" name="files" multiple required aria-describedby="capture-hint"
+                 accept=".mov,.mp4,.m4v,.avi,.mkv,.webm,.jpg,.jpeg,.png,.webp,.heic,.heif,.tif,.tiff">
+          <p id="capture-hint" class="hint">Choose one video or 12–500 overlapping photos of the same room.</p>
+          <label for="title">Scene name <span>(optional)</span></label>
+          <input id="title" name="title" type="text" maxlength="80" placeholder="Living room">
+          <button type="submit">Build walkthrough</button>
+          <p id="feedback" role="status"></p>
+        </form>
+      </section>
+      <section aria-labelledby="scenes-heading">
+        <h2 id="scenes-heading">Your scenes</h2>
+        <p id="library-status" class="hint" role="status">Loading scenes…</p>
+        <ul id="scenes"></ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

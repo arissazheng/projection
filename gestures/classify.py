@@ -1,26 +1,4 @@
-"""Rule-based hand-gesture classifier on MediaPipe's 21 hand landmarks.
-
-GESTURES (palm facing the camera, either hand):
-
-  name    fingers up                 meaning in the viewer
-  ------  -------------------------  ------------------------------------------------
-  palm    index+middle+ring+pinky    LOOK: hand position steers your viewpoint
-  point   index only                 WALK FORWARD into the room
-  peace   index + middle             WALK BACK out of the room
-  three   index + middle + ring      RESET to the original photo view
-  fist    none                       HOLD: freeze where you are (move your hand freely)
-  none    no hand / anything else    HOLD
-
-The thumb is ignored on purpose: whether it reads as "up" depends on hand rotation,
-so it makes classification flaky.
-
-A finger counts as extended when its tip is clearly farther from the wrist than its
-middle (PIP) joint. That ratio doesn't change with hand size, distance to the camera,
-or in-plane rotation.
-
-This is the hand-written baseline. PLAN.md M4 replaces it with a small MLP trained
-on our own labelled clips, and the baseline gives that model something to beat.
-"""
+"""Classify hand gestures using MediaPipe landmarks and a rolling majority vote."""
 from __future__ import annotations
 
 from collections import Counter, deque
@@ -52,7 +30,7 @@ DESCRIPTIONS = {
 
 
 def fingers_extended(lm: np.ndarray, ratio: float = 1.15) -> tuple[bool, bool, bool, bool]:
-    """lm: (21, 2|3) landmarks. Returns extended flags for index, middle, ring, pinky."""
+    """Compare fingertip and middle-joint distances from the wrist. Ignore the thumb."""
     wrist = lm[WRIST, :2]
     out = []
     for pip, tip in FINGERS:
@@ -70,15 +48,11 @@ def classify(lm: np.ndarray | None) -> str:
 
 @dataclass
 class Debouncer:
-    """Only switch gesture after it wins a majority of the last `window` frames.
-
-    Stops a single misread frame (common while the hand moves between poses) from
-    triggering a walk or a reset.
-    """
+    """Switch gestures after a majority of the last `window` frames agrees."""
     window: int = 5
     current: str = "none"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self._hist: deque[str] = deque(maxlen=self.window)
 
     def update(self, raw: str) -> str:
