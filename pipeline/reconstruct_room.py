@@ -32,8 +32,6 @@ DEFAULT_STEPS = 5000
 COLMAP_THREADS = min(8, os.cpu_count() or 1)
 # Decode this many candidate frames per kept frame, then keep the sharpest of each group.
 FRAME_OVERSAMPLE = 3
-# A kept frame counts as blurry below this fraction of the capture's 90th-percentile sharpness.
-BLUR_RATIO = 0.3
 SEQUENTIAL_OVERLAP = 15
 # Accept a camera model without further work once it places this share of the frames.
 GOOD_ALIGNMENT = 0.7
@@ -60,13 +58,6 @@ def sharpness(path: Path) -> float:
         g = np.asarray(gray, dtype=np.float32)
     lap = 4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]
     return float(lap.var())
-
-
-def blurry_fraction(images: Path) -> float:
-    scores = np.array([sharpness(path) for path in sorted(images.glob('*.jpg'))])
-    if not len(scores):
-        return 0.0
-    return float(np.mean(scores < BLUR_RATIO * np.percentile(scores, 90)))
 
 
 def input_kind(paths: list[str] | list[Path]) -> str:
@@ -205,12 +196,9 @@ def align_images(dataset: Path, images: Path, kind: str, count: int,
 
     def map_incremental() -> pycolmap.Reconstruction | None:
         report('alignment', 'Estimating where each image was taken…')
+        # COLMAP's default adjustment schedule. Re-solving less often was faster but
+        # placed only 77 of 160 frames on a capture the defaults align almost fully.
         options = pycolmap.IncrementalPipelineOptions(num_threads=COLMAP_THREADS)
-        # Re-solve the whole scene after it grows 30% instead of 10%, with fewer
-        # iterations. Local adjustment still refines every newly added image.
-        options.ba_global_frames_ratio = 1.3
-        options.ba_global_points_ratio = 1.3
-        options.ba_global_max_num_iterations = 30
         out = maps / f'incremental-{next(attempts)}'
         out.mkdir()
         with timed('alignment (incremental)'):
@@ -243,12 +231,8 @@ def align_images(dataset: Path, images: Path, kind: str, count: int,
 
     registered = model.num_reg_images() if model is not None else 0
     if model is None or registered < max(MIN_VIEWS, math.ceil(count * 0.5)):
-        hint = ''
-        blurry = blurry_fraction(images)
-        if blurry > 0.2:
-            hint = f' About {blurry:.0%} of the frames were blurry, so move the camera more slowly.'
         raise ValueError(f'COLMAP aligned {registered} of {count} images into one scene. Capture more overlapping '
-                         'views while physically moving the camera, and keep the room still and well lit.' + hint)
+                         'views while physically moving the camera, and keep the room still and well lit.')
     return model
 
 
