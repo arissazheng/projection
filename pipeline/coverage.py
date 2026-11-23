@@ -5,9 +5,10 @@ the capture never saw, where the viewer shows only black.
 
 From the start camera, every reasonably opaque splat gets a horizontal angle (yaw,
 positive = to the right) and a vertical angle (pitch, positive = up) relative to the
-start view direction. The covered range is the contiguous run of well-filled angle
-bins around straight ahead. The camera may turn until the edge of its field of view
-reaches the edge of that run, with a small overlap allowed.
+start view direction. The camera may point in any direction, continuing outward from
+straight ahead, as long as at least half of its field of view still contains data.
+That lets it turn past narrow gaps (bare wall between two objects) but not into
+empty space.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import numpy as np
 BIN_DEGREES = 5
 MIN_BIN_SHARE = 0.1  # a bin counts as covered with at least 10% of a typical filled bin's weight
 MIN_OPACITY = 0.05  # ignore nearly invisible splats
-EDGE_OVERLAP = 0.35  # the view may extend this share of half its field of view past the data
+MIN_VIEW_FILLED = 0.5  # share of the view that must show scene data
 
 
 def read_positions_and_opacity(ply: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -38,22 +39,29 @@ def read_positions_and_opacity(ply: Path) -> tuple[np.ndarray, np.ndarray]:
     return xyz, opacity
 
 
-def covered_run(angles: np.ndarray, weights: np.ndarray, limit: float) -> tuple[float, float]:
-    """Edges (degrees) of the contiguous well-filled bin run that contains 0."""
+def allowed_range(angles: np.ndarray, weights: np.ndarray, limit: float,
+                  half_view: float) -> tuple[float, float]:
+    """Range of view-center angles (degrees) around 0 whose view is mostly filled."""
     edges = np.arange(-limit, limit + BIN_DEGREES, BIN_DEGREES)
+    centers = (edges[:-1] + edges[1:]) / 2
     counts, _ = np.histogram(angles, bins=edges, weights=weights)
     if counts.max() == 0:
         return 0.0, 0.0
     # Compare with a typical filled bin, not the fullest one, so a single dense
     # spot does not make the rest of the room look empty.
-    filled = counts >= MIN_BIN_SHARE * np.median(counts[counts > 0])
-    center = int(np.searchsorted(edges, 0.0, side='right') - 1)
-    lo = hi = min(max(center, 0), len(filled) - 1)
-    while lo > 0 and filled[lo - 1]:
+    filled = (counts >= MIN_BIN_SHARE * np.median(counts[counts > 0])).astype(float)
+    window = max(1, int(round(half_view / BIN_DEGREES)))
+    share = np.convolve(filled, np.ones(2 * window + 1) / (2 * window + 1), mode='same')
+    ok = share >= MIN_VIEW_FILLED
+    center = int(np.argmin(np.abs(centers)))
+    if not ok[center]:
+        return 0.0, 0.0
+    lo = hi = center
+    while lo > 0 and ok[lo - 1]:
         lo -= 1
-    while hi < len(filled) - 1 and filled[hi + 1]:
+    while hi < len(ok) - 1 and ok[hi + 1]:
         hi += 1
-    return float(edges[lo]), float(edges[hi + 1])
+    return float(min(0.0, centers[lo])), float(max(0.0, centers[hi]))
 
 
 def compute_coverage(ply: Path, settings: Path) -> dict:
@@ -76,16 +84,13 @@ def compute_coverage(ply: Path, settings: Path) -> dict:
     pitch = np.degrees(np.arctan2(v @ up, np.hypot(v @ right, v @ flat)))
     start_pitch = math.degrees(math.atan2(forward.dot(up), np.linalg.norm(flat * np.linalg.norm(forward))))
 
-    yaw_lo, yaw_hi = covered_run(yaw, weight, 180)
-    ahead = (yaw > yaw_lo) & (yaw < yaw_hi)  # pitch coverage within the covered yaw range
-    pitch_lo, pitch_hi = covered_run(pitch[ahead] - start_pitch, weight[ahead], 90)
-    margin = fov / 2 * (1 - EDGE_OVERLAP)
-    return {
-        # Degrees relative to the start view: positive yaw = right, positive pitch = up.
-        'yaw': [min(0.0, yaw_lo + margin), max(0.0, yaw_hi - margin)],
-        'pitch': [min(0.0, pitch_lo + margin), max(0.0, pitch_hi - margin)],
-        'data': {'yaw': [yaw_lo, yaw_hi], 'pitch': [pitch_lo, pitch_hi], 'fov': fov},
-    }
+    # The viewer's fov is vertical; on a landscape display the horizontal view is wider,
+    # so the vertical value is the conservative choice for both.
+    yaw_lo, yaw_hi = allowed_range(yaw, weight, 180, fov / 2)
+    ahead = (yaw > yaw_lo - fov / 2) & (yaw < yaw_hi + fov / 2)  # pitch within reachable yaw
+    pitch_lo, pitch_hi = allowed_range(pitch[ahead] - start_pitch, weight[ahead], 90, fov / 2)
+    # Degrees relative to the start view: positive yaw = right, positive pitch = up.
+    return {'yaw': [yaw_lo, yaw_hi], 'pitch': [pitch_lo, pitch_hi], 'fov': fov}
 
 
 def cached_coverage(result: Path) -> dict:

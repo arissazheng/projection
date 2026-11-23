@@ -3,11 +3,11 @@
 // Hand movement maps directly to camera movement: how far you move is how far the
 // camera goes, and how fast you move is how fast it goes.
 //
-//   palm   (four fingers up)       turn: moving your hand left/right/up/down from where
-//                                  you opened it turns the view by a matching angle.
-//                                  Turning stops at the edge of the captured data.
-//   point  (index up)              push: moving your hand toward the camera moves the
-//                                  camera forward, pulling it back moves backward.
+//   palm   (four fingers up)       turn and zoom: moving your hand left/right/up/down
+//                                  from where you opened it turns the view by a matching
+//                                  angle (stopping where the captured data ends); moving
+//                                  it toward the camera moves forward, away moves back.
+//   point  (index up)              zoom only: toward the camera = forward, away = back
 //   peace  (index + middle up)     move back steadily
 //   three  (index + middle + ring) return to the starting position and direction
 //   fist / no hand                 hold, so you can reposition your hand
@@ -23,15 +23,16 @@
 import { GestureClient } from '../js/gestures.js';
 
 const params = new URL(location.href).searchParams;
-const TURN_PER_HAND = 60; // degrees of turn per half-frame of hand movement
+const TURN_PER_HAND = 90; // degrees of turn per half-frame of hand movement
 const PUSH_PER_DOUBLING = 1.5; // scene units moved when the hand's apparent size doubles
 const SIZE_SMOOTHING = 12; // 1/s; filters frame-to-frame jitter in the hand size
+const ZOOM_DEAD_ZONE = 0.15; // ignore hand-size changes slower than this (log units/s)
 const FOLLOW = 14; // 1/s; how quickly the camera catches up with the hand
 const MAX_DISTANCE = 4; // scene units (the importer scales the camera path to about 3)
 const DEFAULT_COVERAGE = { yaw: [-30, 30], pitch: [-20, 20] }; // if the scene has none
 const BACK_SPEED = 0.8; // scene units per second for the "peace" gesture
 const LABELS = {
-  palm: '✋ Turn', point: '☝️ Push to move', peace: '✌️ Back',
+  palm: '✋ Turn & zoom', point: '☝️ Zoom', peace: '✌️ Back',
   three: '🤟 Reset', fist: '✊ Hold', none: 'No hand',
 };
 
@@ -140,7 +141,8 @@ function palm(g) {
   edge = turnTarget.yaw !== yaw || turnTarget.pitch !== pitch ? 'edge of captured view' : '';
 }
 
-function point(g, dt) {
+/** Zoom: hand toward the camera (it looks bigger) moves forward, away moves back. */
+function zoom(g, dt) {
   if (!(g.size > 0)) return;
   const raw = Math.log(g.size);
   if (logSize === null) {
@@ -148,10 +150,13 @@ function point(g, dt) {
     return;
   }
   const smoothed = logSize + (raw - logSize) * ease(SIZE_SMOOTHING, dt);
+  const change = smoothed - logSize;
+  logSize = smoothed;
+  // Ignore slow drift, such as the hand tilting while it turns the view.
+  if (Math.abs(change) < ZOOM_DEAD_ZONE * dt) return;
   // Doubling the hand's apparent size (about half the distance to the camera) moves
   // PUSH_PER_DOUBLING units, so a faster push moves the camera faster.
-  pushPending += ((smoothed - logSize) / Math.LN2) * PUSH_PER_DOUBLING;
-  logSize = smoothed;
+  pushPending += (change / Math.LN2) * PUSH_PER_DOUBLING;
 }
 
 // ---------------------------------------------------------------- main loop
@@ -170,7 +175,7 @@ function update(now) {
 
   if (camera) {
     if (g.gesture === 'palm') palm(g);
-    if (g.gesture === 'point') point(g, dt);
+    if (g.gesture === 'palm' || g.gesture === 'point') zoom(g, dt);
     if (g.gesture === 'peace') pushPending = -BACK_SPEED / FOLLOW; // steady glide backward
     const state = camera.get();
     if (state.mode === 'fly') {
