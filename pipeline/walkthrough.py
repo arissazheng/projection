@@ -160,6 +160,12 @@ def create_app(steps: int) -> Flask:
 
     @app.get('/splat-viewer/<path:filename>')
     def viewer_files(filename):
+        if filename == 'index.html':
+            # Add the hand-gesture bridge to the viewer page. It stays idle until the
+            # gesture server is running, and ?nogestures turns it off.
+            page = (VIEWER / 'index.html').read_text(encoding='utf-8')
+            bridge = '<script type="module" src="/viewer/walkthrough/gesture-bridge.js"></script>'
+            return page.replace('</body>', f'{bridge}\n</body>', 1), {'Content-Type': 'text/html; charset=utf-8'}
         return send_from_directory(VIEWER, filename)
 
     return app

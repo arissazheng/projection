@@ -21,6 +21,8 @@ Open [Room Walkthrough](http://127.0.0.1:8181/). Select one video or 12–500 ov
 | `Q` `E` | Change height with mouse look enabled |
 | `R` / `Esc` | Reset the camera / release the mouse |
 
+**Hand gestures.** With `.venv/bin/python -m gestures.server` running, the walkthrough viewer follows the same gestures as the photo viewer (see below). Point to move forward, show two fingers to move back, open your palm and move it off center to slide left/right or rise/sink, show three fingers to reset, and make a fist to stop. The bridge holds the arrow keys and Ctrl (slow) for you, and stops movement about 4 units from the start so you stay inside the captured room. Add `?nogestures` to the viewer URL to turn it off.
+
 Move slowly through the room while recording. Keep nearby views overlapping and film toward the angles you want to explore. Sparsely captured angles can smear, and Fly mode allows the camera to pass through surfaces.
 
 Processing runs locally. The app saves finished scenes in `.walkthrough-data/` so they reopen without training. Use `--steps 10000` when starting the server to train new imports longer, or `--steps 2000` for a quick preview of a new capture.
