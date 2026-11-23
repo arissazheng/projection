@@ -156,6 +156,7 @@ def run_camera(args, out: Broadcaster):
             msg["x"] = round(float(lm[PALM_CENTER, 0] * 2 - 1), 4)
             msg["y"] = round(float(1 - lm[PALM_CENTER, 1] * 2), 4)
             msg["fingers"] = [int(f) for f in fingers_extended(lm)]
+            msg["size"] = round(palm_size(lm, w, h), 5)
         out.send(msg)
 
         if not args.no_window:
@@ -166,6 +167,15 @@ def run_camera(args, out: Broadcaster):
                 break
     cap.release()
     cv2.destroyAllWindows()
+
+
+def palm_size(lm: np.ndarray, w: int, h: int) -> float:
+    """Apparent palm size as a fraction of the frame width. It grows as the hand nears
+    the camera. It only uses palm landmarks (wrist and knuckles), so curling the
+    fingers into a gesture does not change it."""
+    p = lm[:, :2] * [w, h]
+    pairs = ((0, 5), (0, 17), (5, 17), (0, 9))
+    return float(np.mean([np.linalg.norm(p[a] - p[b]) for a, b in pairs]) / w)
 
 
 def run_demo(out: Broadcaster):
@@ -180,8 +190,11 @@ def run_demo(out: Broadcaster):
             while time.perf_counter() < end:
                 t = time.perf_counter() - t0
                 x, y = (0.7 * np.sin(t * 1.5), 0.4 * np.sin(t * 0.9)) if gesture == "palm" else (0.0, 0.0)
+                # While pointing, the demo hand moves toward the camera and back.
+                size = 0.12 * (1.4 + 0.4 * np.sin(t * 2.0)) if gesture == "point" else 0.12
                 out.send({"hand": gesture != "none", "gesture": gesture, "raw": gesture, "x": round(x, 4),
-                          "y": round(y, 4), "fingers": [0, 0, 0, 0], "fps": 30.0, "ms": 0.0, "demo": True})
+                          "y": round(y, 4), "size": round(float(size), 5), "fingers": [0, 0, 0, 0],
+                          "fps": 30.0, "ms": 0.0, "demo": True})
                 time.sleep(1 / 30)
 
 

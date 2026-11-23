@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from flask import Flask, abort, jsonify, redirect, request, send_from_directory, url_for
 
+from .coverage import cached_coverage
 from .reconstruct_room import DEFAULT_STEPS, REPO, TOOLS, brush_binary, input_kind, reconstruct
 
 
@@ -151,6 +152,14 @@ def create_app(steps: int) -> Flask:
         return redirect(url_for('viewer_files', filename='index.html', noanim='', reticle='',
                                 content=url_for('room_files', scene_id=scene_id, filename='scene.ply'),
                                 settings=url_for('room_files', scene_id=scene_id, filename='settings.json')))
+
+    @app.get('/room/<uuid:scene_id>/coverage.json')
+    def room_coverage(scene_id):
+        # Directions around the start view that contain scene data, for the gesture bridge.
+        result = JOBS / str(scene_id) / 'result'
+        if not (result / 'scene.ply').is_file():
+            abort(404)
+        return jsonify(cached_coverage(result))
 
     @app.get('/room/<uuid:scene_id>/<filename>')
     def room_files(scene_id, filename):
