@@ -23,11 +23,16 @@
 import { GestureClient } from '../js/gestures.js';
 
 const params = new URL(location.href).searchParams;
-const TURN_PER_HAND = 90; // degrees of turn per half-frame of hand movement
+const TURN_PER_HAND = 55; // degrees of turn per half-frame of hand movement
 const PUSH_PER_DOUBLING = 1.5; // scene units moved when the hand's apparent size doubles
-const SIZE_SMOOTHING = 12; // 1/s; filters frame-to-frame jitter in the hand size
-const ZOOM_DEAD_ZONE = 0.15; // ignore hand-size changes slower than this (log units/s)
-const FOLLOW = 14; // 1/s; how quickly the camera catches up with the hand
+// The tracker can run at under 10 updates/s on a busy laptop. Smoothing the hand and
+// letting the camera follow gently makes it glide between updates instead of jumping.
+const HAND_SMOOTHING = 7; // 1/s; filters the hand position
+const SIZE_SMOOTHING = 5; // 1/s; filters the hand size
+const FOLLOW = 6; // 1/s; how quickly the camera catches up with the hand
+const ZOOM_DEAD_ZONE = 0.3; // ignore hand-size changes slower than this (log units/s)
+const ZOOM_MAX_SIDE_SPEED = 1.2; // no zooming while the hand moves sideways faster (units/s)
+const DROPOUT_GRACE = 0.5; // s; a hand lost this briefly (motion blur) keeps its anchor
 const MAX_DISTANCE = 4; // scene units (the importer scales the camera path to about 3)
 const DEFAULT_COVERAGE = { yaw: [-30, 30], pitch: [-20, 20] }; // if the scene has none
 const BACK_SPEED = 0.8; // scene units per second for the "peace" gesture
@@ -41,7 +46,6 @@ let canvas = null;
 let camera = null; // { get, set } from the viewer's debug panel hook
 let startView = null; // camera state at load, restored by the reset gesture
 let coverage = DEFAULT_COVERAGE;
-let lastGesture = 'none';
 let lastTime = performance.now();
 let edge = ''; // why movement stopped, for the badge
 
@@ -49,6 +53,10 @@ let edge = ''; // why movement stopped, for the badge
 let turn = { yaw: 0, pitch: 0 };
 let turnTarget = { yaw: 0, pitch: 0 };
 let turnAnchor = null; // { x, y, yaw, pitch } when the palm opened
+let hand = null; // smoothed { x, y } palm position
+let handSpeed = 0; // smoothed sideways speed of the hand (units/s)
+let activeGesture = 'none'; // gesture being acted on, kept through brief dropouts
+let lostFor = 0; // s since the hand was last seen during palm or point
 
 // Pointing: smoothed log of the hand's apparent size.
 let logSize = null;
@@ -124,6 +132,8 @@ function applyPush(state, dt) {
 function onGestureStart(g) {
   edge = '';
   turnAnchor = null;
+  hand = null;
+  handSpeed = 0;
   logSize = null;
   pushPending = 0;
   if (g.gesture === 'three' && startView) {
@@ -133,10 +143,23 @@ function onGestureStart(g) {
   }
 }
 
-function palm(g) {
-  if (!turnAnchor) turnAnchor = { x: g.x, y: g.y, yaw: turn.yaw, pitch: turn.pitch };
-  const yaw = turnAnchor.yaw + (g.x - turnAnchor.x) * TURN_PER_HAND; // hand right = turn right
-  const pitch = turnAnchor.pitch + (g.y - turnAnchor.y) * TURN_PER_HAND; // hand up = look up
+/** Smooth the palm position and track how fast it moves sideways. */
+function trackHand(g, dt) {
+  if (!hand) {
+    hand = { x: g.x, y: g.y };
+    return;
+  }
+  const k = ease(HAND_SMOOTHING, dt);
+  const nx = hand.x + (g.x - hand.x) * k, ny = hand.y + (g.y - hand.y) * k;
+  const speed = Math.hypot(nx - hand.x, ny - hand.y) / Math.max(dt, 1e-3);
+  handSpeed += (speed - handSpeed) * ease(HAND_SMOOTHING, dt);
+  hand = { x: nx, y: ny };
+}
+
+function palm() {
+  if (!turnAnchor) turnAnchor = { x: hand.x, y: hand.y, yaw: turn.yaw, pitch: turn.pitch };
+  const yaw = turnAnchor.yaw + (hand.x - turnAnchor.x) * TURN_PER_HAND; // hand right = turn right
+  const pitch = turnAnchor.pitch + (hand.y - turnAnchor.y) * TURN_PER_HAND; // hand up = look up
   turnTarget = { yaw: clamp(yaw, coverage.yaw), pitch: clamp(pitch, coverage.pitch) };
   edge = turnTarget.yaw !== yaw || turnTarget.pitch !== pitch ? 'edge of captured view' : '';
 }
@@ -152,8 +175,9 @@ function zoom(g, dt) {
   const smoothed = logSize + (raw - logSize) * ease(SIZE_SMOOTHING, dt);
   const change = smoothed - logSize;
   logSize = smoothed;
-  // Ignore slow drift, such as the hand tilting while it turns the view.
-  if (Math.abs(change) < ZOOM_DEAD_ZONE * dt) return;
+  // Ignore slow drift (the hand tilting while it turns) and size changes while the hand
+  // sweeps sideways quickly, when motion blur makes its measured size unreliable.
+  if (Math.abs(change) < ZOOM_DEAD_ZONE * dt || handSpeed > ZOOM_MAX_SIDE_SPEED) return;
   // Doubling the hand's apparent size (about half the distance to the camera) moves
   // PUSH_PER_DOUBLING units, so a faster push moves the camera faster.
   pushPending += (change / Math.LN2) * PUSH_PER_DOUBLING;
@@ -168,15 +192,22 @@ function update(now) {
   if (!canvas) return;
 
   const g = client.state;
-  if (g.gesture !== lastGesture) {
-    lastGesture = g.gesture;
+  // Fast movement can blur the hand so the tracker loses it for a frame or two. Keep
+  // acting on palm/point (holding still) through such dropouts so the anchor survives.
+  const steering = activeGesture === 'palm' || activeGesture === 'point';
+  lostFor = g.gesture === 'none' && steering ? lostFor + dt : 0;
+  const gesture = lostFor > 0 && lostFor < DROPOUT_GRACE ? activeGesture : g.gesture;
+  if (gesture !== activeGesture) {
+    activeGesture = gesture;
     onGestureStart(g);
   }
+  const seen = g.gesture === gesture; // false while riding out a dropout
 
   if (camera) {
-    if (g.gesture === 'palm') palm(g);
-    if (g.gesture === 'palm' || g.gesture === 'point') zoom(g, dt);
-    if (g.gesture === 'peace') pushPending = -BACK_SPEED / FOLLOW; // steady glide backward
+    if (seen && (gesture === 'palm' || gesture === 'point')) trackHand(g, dt);
+    if (seen && gesture === 'palm') palm();
+    if (seen && (gesture === 'palm' || gesture === 'point')) zoom(g, dt);
+    if (gesture === 'peace') pushPending = -BACK_SPEED / FOLLOW; // steady glide backward
     const state = camera.get();
     if (state.mode === 'fly') {
       const before = JSON.stringify([state.position, state.angles]);
@@ -188,7 +219,7 @@ function update(now) {
 
   badge.textContent = !client.connected
     ? 'Gestures: not connected. Run python -m gestures.server'
-    : `Gestures: ${LABELS[g.gesture] ?? g.gesture}${edge ? ` (${edge})` : ''}`;
+    : `Gestures: ${LABELS[gesture] ?? gesture}${edge ? ` (${edge})` : ''}`;
 }
 
 const badge = document.createElement('div');
