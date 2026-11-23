@@ -7,6 +7,8 @@ import math
 import os
 import shutil
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
@@ -28,8 +30,43 @@ BRUSH_HEADER_BYTES = 16_387
 VIDEO_FRAME_LIMIT = 160
 DEFAULT_STEPS = 5000
 COLMAP_THREADS = min(8, os.cpu_count() or 1)
+# Decode this many candidate frames per kept frame, then keep the sharpest of each group.
+FRAME_OVERSAMPLE = 3
+# A kept frame counts as blurry below this fraction of the capture's 90th-percentile sharpness.
+BLUR_RATIO = 0.3
+SEQUENTIAL_OVERLAP = 15
+# Accept a camera model without further work once it places this share of the frames.
+GOOD_ALIGNMENT = 0.7
+# 'global' tries GLOMAP first and falls back to incremental mapping; 'incremental' skips GLOMAP.
+MAPPER = os.environ.get('WALKTHROUGH_MAPPER', 'global')
 ProgressCallback = Callable[[str, str], None]
 LOG = logging.getLogger(__name__)
+
+
+@contextmanager
+def timed(stage: str):
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        LOG.info('timing %s: %.1fs', stage, time.perf_counter() - start)
+
+
+def sharpness(path: Path) -> float:
+    """Variance of the Laplacian on a small grayscale copy. Higher is sharper."""
+    with Image.open(path) as image:
+        gray = ImageOps.grayscale(image)
+        gray.thumbnail((480, 480))
+        g = np.asarray(gray, dtype=np.float32)
+    lap = 4 * g[1:-1, 1:-1] - g[:-2, 1:-1] - g[2:, 1:-1] - g[1:-1, :-2] - g[1:-1, 2:]
+    return float(lap.var())
+
+
+def blurry_fraction(images: Path) -> float:
+    scores = np.array([sharpness(path) for path in sorted(images.glob('*.jpg'))])
+    if not len(scores):
+        return 0.0
+    return float(np.mean(scores < BLUR_RATIO * np.percentile(scores, 90)))
 
 
 def input_kind(paths: list[str] | list[Path]) -> str:
@@ -66,17 +103,29 @@ def _extract_video_frames(video: Path, output: Path) -> None:
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError('Could not determine the video duration.')
 
+    # Decode FRAME_OVERSAMPLE candidates per kept frame and keep the sharpest of each
+    # consecutive group: same even coverage of the video, far fewer motion-blurred frames.
     sample_rate = min(6, VIDEO_FRAME_LIMIT / duration)
-    filters = f'fps={sample_rate:.8f},scale={FRAME_SIZE}:{FRAME_SIZE}:force_original_aspect_ratio=decrease'
+    candidates = output.parent / 'candidates'
+    candidates.mkdir()
+    limit = VIDEO_FRAME_LIMIT * FRAME_OVERSAMPLE
+    filters = (f'fps={sample_rate * FRAME_OVERSAMPLE:.8f},'
+               f'scale={FRAME_SIZE}:{FRAME_SIZE}:force_original_aspect_ratio=decrease')
     command = [
         imageio_ffmpeg.get_ffmpeg_exe(), '-hide_banner', '-loglevel', 'error', '-nostdin',
-        '-i', str(video), '-map', '0:v:0', '-vf', filters, '-frames:v', str(VIDEO_FRAME_LIMIT),
-        '-q:v', '2', str(output / '%05d.jpg'),
+        '-i', str(video), '-map', '0:v:0', '-vf', filters, '-frames:v', str(limit),
+        '-q:v', '2', str(candidates / '%05d.jpg'),
     ]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
         LOG.error('FFmpeg: %s', result.stderr.strip())
         raise ValueError('Could not extract frames from the video. Try exporting it as a MOV or MP4 file.')
+
+    frames = sorted(candidates.glob('*.jpg'))
+    for index, start in enumerate(range(0, len(frames), FRAME_OVERSAMPLE), start=1):
+        best = max(frames[start:start + FRAME_OVERSAMPLE], key=sharpness)
+        best.replace(output / f'{index:05d}.jpg')
+    shutil.rmtree(candidates)
 
 
 def _prepare_photos(paths: list[Path], output: Path) -> None:
@@ -118,32 +167,88 @@ def align_images(dataset: Path, images: Path, kind: str, count: int,
 
     report('features', f'Finding visual features in {count} images…')
     camera_mode = pycolmap.CameraMode.SINGLE if kind == 'video' else pycolmap.CameraMode.AUTO
-    pycolmap.extract_features(database, images, camera_mode=camera_mode, extraction_options=extraction, device=device)
+    with timed('features'):
+        pycolmap.extract_features(database, images, camera_mode=camera_mode,
+                                  extraction_options=extraction, device=device)
 
-    def map_views() -> pycolmap.Reconstruction | None:
+    def largest(models: dict) -> pycolmap.Reconstruction | None:
+        return max(models.values(), default=None, key=lambda model: model.num_reg_images())
+
+    def better(a, b):
+        if a is None:
+            return b
+        if b is None:
+            return a
+        return b if b.num_reg_images() > a.num_reg_images() else a
+
+    def good(model) -> bool:
+        return model is not None and model.num_reg_images() >= count * GOOD_ALIGNMENT
+
+    attempts = iter(range(1, 100))
+
+    def map_global() -> pycolmap.Reconstruction | None:
+        # GLOMAP solves all camera rotations and positions at once instead of adding
+        # images one by one and re-solving after each batch. It is usually several
+        # times faster on short captures.
+        report('alignment', 'Estimating where each image was taken…')
+        options = pycolmap.GlobalPipelineOptions(num_threads=COLMAP_THREADS)
+        out = maps / f'global-{next(attempts)}'
+        out.mkdir()
+        try:
+            with timed('alignment (global)'):
+                model = largest(pycolmap.global_mapping(database, images, out, options=options))
+        except Exception:  # noqa: BLE001 - fall back to incremental mapping on any solver failure
+            LOG.exception('Global mapping failed; falling back to incremental mapping.')
+            return None
+        LOG.info('global mapping registered %d of %d images', model.num_reg_images() if model else 0, count)
+        return model
+
+    def map_incremental() -> pycolmap.Reconstruction | None:
         report('alignment', 'Estimating where each image was taken…')
         options = pycolmap.IncrementalPipelineOptions(num_threads=COLMAP_THREADS)
-        candidates = pycolmap.incremental_mapping(database, images, maps, options=options)
-        return max(candidates.values(), default=None, key=lambda model: model.num_reg_images())
+        # Re-solve the whole scene after it grows 30% instead of 10%, with fewer
+        # iterations. Local adjustment still refines every newly added image.
+        options.ba_global_frames_ratio = 1.3
+        options.ba_global_points_ratio = 1.3
+        options.ba_global_max_num_iterations = 30
+        out = maps / f'incremental-{next(attempts)}'
+        out.mkdir()
+        with timed('alignment (incremental)'):
+            model = largest(pycolmap.incremental_mapping(database, images, out, options=options))
+        LOG.info('incremental mapping registered %d of %d images', model.num_reg_images() if model else 0, count)
+        return model
+
+    def map_views() -> pycolmap.Reconstruction | None:
+        model = map_global() if MAPPER == 'global' else None
+        if not good(model):
+            model = better(model, map_incremental())
+        return model
 
     report('matching', 'Matching overlapping images…')
     if kind == 'video':
-        pycolmap.match_sequential(database, matching, pycolmap.SequentialPairingOptions(overlap=8), device=device)
+        with timed('matching (sequential)'):
+            pairing = pycolmap.SequentialPairingOptions(overlap=SEQUENTIAL_OVERLAP)
+            pycolmap.match_sequential(database, matching, pairing, device=device)
         model = map_views()
-        if model is None or model.num_reg_images() < count * 0.7:
+        if not good(model):
             report('matching', 'Looking for additional overlapping views…')
-            pycolmap.match_exhaustive(database, matching, device=device)
-            expanded = map_views()
-            if expanded is not None and (model is None or expanded.num_reg_images() > model.num_reg_images()):
-                model = expanded
+            # Pairs matched above are already in the database and are skipped here.
+            with timed('matching (exhaustive)'):
+                pycolmap.match_exhaustive(database, matching, device=device)
+            model = better(model, map_views())
     else:
-        pycolmap.match_exhaustive(database, matching, device=device)
+        with timed('matching (exhaustive)'):
+            pycolmap.match_exhaustive(database, matching, device=device)
         model = map_views()
 
     registered = model.num_reg_images() if model is not None else 0
     if model is None or registered < max(MIN_VIEWS, math.ceil(count * 0.5)):
+        hint = ''
+        blurry = blurry_fraction(images)
+        if blurry > 0.2:
+            hint = f' About {blurry:.0%} of the frames were blurry, so move the camera more slowly.'
         raise ValueError(f'COLMAP aligned {registered} of {count} images into one scene. Capture more overlapping '
-                         'views while physically moving the camera, and keep the room still and well lit.')
+                         'views while physically moving the camera, and keep the room still and well lit.' + hint)
     return model
 
 
@@ -251,10 +356,12 @@ def reconstruct(paths: list[Path], dataset: Path, output: Path, steps: int,
     dataset.mkdir()
     images = dataset / 'images'
     report('preparing', 'Extracting video frames…' if kind == 'video' else 'Preparing photos…')
-    count = prepare_images(paths, kind, images)
+    with timed('frames'):
+        count = prepare_images(paths, kind, images)
     model = align_images(dataset, images, kind, count, report)
     report('preparing', 'Correcting lens distortion in the aligned images…')
-    training_input, model = prepare_training_data(model, images, dataset)
+    with timed('undistort'):
+        training_input, model = prepare_training_data(model, images, dataset)
     registered = model.num_reg_images()
     if registered < max(MIN_VIEWS, math.ceil(count * 0.5)):
         raise ValueError(f'Only {registered} of {count} views had usable camera calibration. '
@@ -262,5 +369,6 @@ def reconstruct(paths: list[Path], dataset: Path, output: Path, steps: int,
     camera = orient_model(model)
     model.write(training_input / 'sparse')
     output.mkdir()
-    train_splat(brush, training_input, output, steps, registered, count, report)
+    with timed('training'):
+        train_splat(brush, training_input, output, steps, registered, count, report)
     return camera, registered, count

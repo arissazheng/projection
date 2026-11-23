@@ -23,7 +23,9 @@ Open [Room Walkthrough](http://127.0.0.1:8181/). Select one video or 12–500 ov
 
 Move slowly through the room while recording. Keep nearby views overlapping and film toward the angles you want to explore. Sparsely captured angles can smear, and Fly mode allows the camera to pass through surfaces.
 
-Processing runs locally. The app saves finished scenes in `.walkthrough-data/` so they reopen without training. Use `--steps 10000` when starting the server to train new imports longer.
+Processing runs locally. The app saves finished scenes in `.walkthrough-data/` so they reopen without training. Use `--steps 10000` when starting the server to train new imports longer, or `--steps 2000` for a quick preview of a new capture.
+
+For video, the importer decodes three candidate frames for each one it keeps and keeps the sharpest. Camera alignment tries COLMAP's global mapper (GLOMAP) first and falls back to incremental mapping if global places fewer than 70% of the frames. Set `WALKTHROUGH_MAPPER=incremental` before starting the server to skip the global mapper. The server log prints a `timing` line for each stage.
 
 ## Single-photo projection
 
