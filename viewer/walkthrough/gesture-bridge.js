@@ -5,16 +5,18 @@
 //
 //   point  (index up)              hold ↑: move forward
 //   peace  (index + middle up)     hold ↓: move back
-//   palm   (four fingers up)       hand left/right of center: slide left/right (← →)
-//                                  hand above/below center: rise/sink (E / Q)
-//   three  (index + middle + ring) press R: reset to the starting view
+//   palm   (four fingers up)       joystick turn: hand left/right of center turns,
+//                                  above/below looks up/down
+//   three  (index + middle + ring) reset to the starting position and direction
 //   fist / no hand                 release everything
 //
-// Why keys only: the arrow keys and Q/E move the camera like W/A/S/D, but W/A/S/D also
-// switch the viewer to "gaming controls", which need pointer lock, and a script cannot
-// take pointer lock. Simulated mouse drags for turning the camera were not reliable
-// either, so the palm slides the camera instead. Sliding sideways in front of the room
-// is also the parallax motion the projection is about.
+// Moving uses the arrow keys, not W/A/S/D: W/A/S/D also switch the viewer to "gaming
+// controls", which need pointer lock, and a script cannot take pointer lock.
+//
+// Turning: simulated mouse drags were not reliable, so the bridge turns the camera
+// through the viewer's own camera-state hook. The viewer only puts getCameraState /
+// setCameraState on window while its debug panel (Ctrl+Shift+D) is open, so the bridge
+// opens the panel once, keeps the two functions, and closes it again.
 //
 // Movement stops once the camera is MAX_DISTANCE from where it started, because fly
 // mode otherwise passes through walls and leaves the captured room. Add ?nogestures to
@@ -24,6 +26,8 @@ import { GestureClient } from '../js/gestures.js';
 
 const params = new URL(location.href).searchParams;
 const DEAD_ZONE = 0.25; // palm offsets smaller than this (in [-1, 1]) hold still
+const TURN_SPEED = 70; // degrees per second at full hand offset
+const MAX_PITCH = 75; // degrees above or below level
 const MAX_DISTANCE = 4; // scene units (the importer scales the camera path to about 3)
 const COAST_SECONDS = 0.3; // fly mode keeps gliding briefly after a key is released
 const SETTLE_SECONDS = 0.4; // ignore direction while momentum from the last move fades
@@ -32,7 +36,7 @@ const SETTLE_SECONDS = 0.4; // ignore direction while momentum from the last mov
 const SLOW_KEY = 'ControlLeft';
 const WALK_KEYS = { point: 'ArrowUp', peace: 'ArrowDown' };
 const LABELS = {
-  palm: '✋ Slide', point: '☝️ Forward', peace: '✌️ Back',
+  palm: '✋ Turn', point: '☝️ Forward', peace: '✌️ Back',
   three: '🤟 Reset', fist: '✊ Hold', none: 'No hand',
 };
 const KEY_NAMES = { ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft',
@@ -47,6 +51,8 @@ let start = null; // camera position when the scene loaded or was reset
 let lastTime = performance.now();
 let lastDistance = 0;
 let heldFor = 0; // seconds the current key has been held
+let cameraState = null; // { get, set } from the viewer's debug panel hook
+let startView = null; // camera state to restore on reset
 
 function keyEvent(type, code) {
   const key = KEY_NAMES[code] ?? (code.startsWith('Key') ? code.slice(3).toLowerCase() : code.replace('Digit', ''));
@@ -86,12 +92,37 @@ function distanceFromStart() {
   return p.distance(start);
 }
 
-/** Palm: the hand's offset from the frame center picks one direction to slide. */
-function slideKey(g) {
-  const ax = Math.abs(g.x), ay = Math.abs(g.y);
-  if (Math.max(ax, ay) < DEAD_ZONE) return null;
-  if (ax >= ay) return g.x > 0 ? 'ArrowRight' : 'ArrowLeft';
-  return g.y > 0 ? 'KeyE' : 'KeyQ';
+/** Palm joystick: turn speed grows with the hand's distance from the frame center. */
+function turn(g, dt) {
+  if (!cameraState) return;
+  const axis = (v) => {
+    const m = Math.abs(v);
+    return m < DEAD_ZONE ? 0 : Math.sign(v) * (m - DEAD_ZONE) / (1 - DEAD_ZONE);
+  };
+  const yaw = axis(g.x), pitch = axis(g.y);
+  if (!yaw && !pitch) return;
+  const s = cameraState.get();
+  if (s.mode !== 'fly') return;
+  s.angles[1] -= yaw * TURN_SPEED * dt; // hand right = turn right
+  s.angles[0] = Math.max(-MAX_PITCH, Math.min(MAX_PITCH, s.angles[0] + pitch * TURN_SPEED * dt));
+  cameraState.set(s);
+}
+
+/** Open the debug panel just long enough to keep its camera get/set functions. */
+function captureCameraHook() {
+  const toggle = () => {
+    const mods = { ctrlKey: true, shiftKey: true };
+    canvas.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyD', key: 'D', bubbles: true, ...mods }));
+    canvas.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyD', key: 'D', bubbles: true, ...mods }));
+  };
+  if (!window.getCameraState) toggle();
+  const get = window.getCameraState, set = window.setCameraState;
+  toggle(); // close the panel; the kept functions stay valid
+  if (typeof get === 'function' && typeof set === 'function') {
+    cameraState = { get, set };
+    startView = get();
+  }
+  else console.warn('gesture bridge: camera hook unavailable, palm turning disabled');
 }
 
 /** Hold `code`, but stop before the camera glides past MAX_DISTANCE from the start. */
@@ -127,13 +158,20 @@ function update(now) {
     blockedKey = null;
     if (g.gesture === 'three') {
       releaseKey();
-      tapKey('KeyR');
-      setTimeout(() => { start = cameraPosition(); }, 300);
+      if (startView) {
+        // Position and direction. Apply again once any glide from the last move has stopped.
+        cameraState.set(structuredClone(startView));
+        setTimeout(() => cameraState.set(structuredClone(startView)), 400);
+      } else {
+        tapKey('KeyR');
+      }
+      setTimeout(() => { start = cameraPosition(); }, 500);
     }
     lastGesture = g.gesture;
   }
 
-  move(g.gesture === 'palm' ? slideKey(g) : WALK_KEYS[g.gesture] ?? null, dt);
+  move(WALK_KEYS[g.gesture] ?? null, dt);
+  if (g.gesture === 'palm') turn(g, dt);
 
   badge.textContent = !client.connected
     ? 'Gestures: not connected. Run python -m gestures.server'
@@ -158,7 +196,10 @@ function waitForViewer() {
   // Fly mode lets the camera move freely through the captured room.
   setTimeout(() => {
     tapKey('Digit2');
-    setTimeout(() => { start = cameraPosition(); }, 300);
+    setTimeout(() => {
+      start = cameraPosition();
+      captureCameraHook();
+    }, 300);
   }, 500);
 }
 
